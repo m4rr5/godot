@@ -845,7 +845,7 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 	return result;
 }
 
-void GDScriptAnalyzer::resolve_class_member(GDScriptParser::ClassNode *p_class, StringName p_name, const GDScriptParser::Node *p_source) {
+void GDScriptAnalyzer::resolve_class_member(GDScriptParser::ClassNode *p_class, const StringName &p_name, const GDScriptParser::Node *p_source) {
 	ERR_FAIL_COND(!p_class->has_member(p_name));
 	resolve_class_member(p_class, p_class->members_indices[p_name], p_source);
 }
@@ -3636,7 +3636,7 @@ void GDScriptAnalyzer::reduce_identifier_from_base(GDScriptParser::IdentifierNod
 			switch (base.builtin_type) {
 				case Variant::NIL: {
 					if (base.is_hard_type()) {
-						push_error(vformat(R"(Invalid get index "%s" on base Nil)", name), p_identifier);
+						push_error(vformat(R"(Cannot get property "%s" on a null object.)", name), p_identifier);
 					}
 					return;
 				}
@@ -3657,6 +3657,10 @@ void GDScriptAnalyzer::reduce_identifier_from_base(GDScriptParser::IdentifierNod
 							p_identifier->set_datatype(type_from_property(prop));
 							return;
 						}
+					}
+					if (Variant::has_builtin_method(base.builtin_type, name)) {
+						p_identifier->set_datatype(make_callable_type(Variant::get_builtin_method_info(base.builtin_type, name)));
+						return;
 					}
 					if (base.is_hard_type()) {
 #ifdef SUGGEST_GODOT4_RENAMES
@@ -3774,6 +3778,60 @@ void GDScriptAnalyzer::reduce_identifier_from_base(GDScriptParser::IdentifierNod
 			if (!is_base && p_base != nullptr) {
 				break;
 			}
+		}
+	}
+
+	// Check non-GDScript scripts.
+	Ref<Script> script_type = base.script_type;
+
+	if (base_class == nullptr && script_type.is_valid()) {
+		List<PropertyInfo> property_list;
+		script_type->get_script_property_list(&property_list);
+
+		for (const PropertyInfo &property_info : property_list) {
+			if (property_info.name != p_identifier->name) {
+				continue;
+			}
+
+			const GDScriptParser::DataType property_type = GDScriptAnalyzer::type_from_property(property_info, false, false);
+
+			p_identifier->set_datatype(property_type);
+			p_identifier->source = GDScriptParser::IdentifierNode::MEMBER_VARIABLE;
+			return;
+		}
+
+		MethodInfo method_info = script_type->get_method_info(p_identifier->name);
+
+		if (method_info.name == p_identifier->name) {
+			p_identifier->set_datatype(make_callable_type(method_info));
+			p_identifier->source = GDScriptParser::IdentifierNode::MEMBER_FUNCTION;
+			return;
+		}
+
+		List<MethodInfo> signal_list;
+		script_type->get_script_signal_list(&signal_list);
+
+		for (const MethodInfo &signal_info : signal_list) {
+			if (signal_info.name != p_identifier->name) {
+				continue;
+			}
+
+			const GDScriptParser::DataType signal_type = make_signal_type(signal_info);
+
+			p_identifier->set_datatype(signal_type);
+			p_identifier->source = GDScriptParser::IdentifierNode::MEMBER_SIGNAL;
+			return;
+		}
+
+		HashMap<StringName, Variant> constant_map;
+		script_type->get_constants(&constant_map);
+
+		if (constant_map.has(p_identifier->name)) {
+			Variant constant = constant_map.get(p_identifier->name);
+
+			p_identifier->set_datatype(make_builtin_meta_type(constant.get_type()));
+			p_identifier->source = GDScriptParser::IdentifierNode::MEMBER_CONSTANT;
+			return;
 		}
 	}
 

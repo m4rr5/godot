@@ -475,7 +475,7 @@ void Main::print_help(const char *p_binary) {
 	OS::get_singleton()->print("  --profiling                       Enable profiling in the script debugger.\n");
 	OS::get_singleton()->print("  --gpu-profile                     Show a GPU profile of the tasks that took the most time during frame rendering.\n");
 	OS::get_singleton()->print("  --gpu-validation                  Enable graphics API validation layers for debugging.\n");
-#if DEBUG_ENABLED
+#ifdef DEBUG_ENABLED
 	OS::get_singleton()->print("  --gpu-abort                       Abort on graphics API usage errors (usually validation layer errors). May help see the problem if your system freezes.\n");
 #endif
 	OS::get_singleton()->print("  --generate-spirv-debug-info       Generate SPIR-V debug information. This allows source-level shader debugging with RenderDoc.\n");
@@ -1615,16 +1615,12 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	}
 
 	// Initialize WorkerThreadPool.
-	{
+	if (editor || project_manager) {
+		WorkerThreadPool::get_singleton()->init(-1, 0.75);
+	} else {
 		int worker_threads = GLOBAL_GET("threading/worker_pool/max_threads");
-		bool low_priority_use_system_threads = GLOBAL_GET("threading/worker_pool/use_system_threads_for_low_priority_tasks");
-		float low_property_ratio = GLOBAL_GET("threading/worker_pool/low_priority_thread_ratio");
-
-		if (editor || project_manager) {
-			WorkerThreadPool::get_singleton()->init();
-		} else {
-			WorkerThreadPool::get_singleton()->init(worker_threads, low_priority_use_system_threads, low_property_ratio);
-		}
+		float low_priority_ratio = GLOBAL_GET("threading/worker_pool/low_priority_thread_ratio");
+		WorkerThreadPool::get_singleton()->init(worker_threads, low_priority_ratio);
 	}
 
 #ifdef TOOLS_ENABLED
@@ -1734,15 +1730,27 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	{
 		String driver_hints = "";
+		String driver_hints_with_d3d12 = "";
+
+		{
+			Vector<String> driver_hints_arr;
 #ifdef VULKAN_ENABLED
-		driver_hints = "vulkan";
+			driver_hints_arr.push_back("vulkan");
 #endif
+			driver_hints = String(",").join(driver_hints_arr);
+
+#ifdef D3D12_ENABLED
+			driver_hints_arr.push_back("d3d12");
+#endif
+			driver_hints_with_d3d12 = String(",").join(driver_hints_arr);
+		}
 
 		String default_driver = driver_hints.get_slice(",", 0);
+		String default_driver_with_d3d12 = driver_hints_with_d3d12.get_slice(",", 0);
 
 		// For now everything defaults to vulkan when available. This can change in future updates.
 		GLOBAL_DEF_RST_NOVAL("rendering/rendering_device/driver", default_driver);
-		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "rendering/rendering_device/driver.windows", PROPERTY_HINT_ENUM, driver_hints), default_driver);
+		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "rendering/rendering_device/driver.windows", PROPERTY_HINT_ENUM, driver_hints_with_d3d12), default_driver_with_d3d12);
 		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "rendering/rendering_device/driver.linuxbsd", PROPERTY_HINT_ENUM, driver_hints), default_driver);
 		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "rendering/rendering_device/driver.android", PROPERTY_HINT_ENUM, driver_hints), default_driver);
 		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "rendering/rendering_device/driver.ios", PROPERTY_HINT_ENUM, driver_hints), default_driver);
@@ -1832,8 +1840,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::ARRAY, "rendering/gl_compatibility/force_angle_on_devices", PROPERTY_HINT_ARRAY_TYPE, vformat("%s/%s:%s", Variant::DICTIONARY, PROPERTY_HINT_NONE, String())), device_blocklist);
 	}
 
-	// Start with RenderingDevice-based backends. Should be included if any RD driver present.
-#ifdef VULKAN_ENABLED
+	// Start with RenderingDevice-based backends.
+#ifdef RD_ENABLED
 	renderer_hints = "forward_plus,mobile";
 	default_renderer_mobile = "mobile";
 #endif
@@ -1913,11 +1921,14 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		// Now validate whether the selected driver matches with the renderer.
 		bool valid_combination = false;
 		Vector<String> available_drivers;
-#ifdef VULKAN_ENABLED
 		if (rendering_method == "forward_plus" || rendering_method == "mobile") {
+#ifdef VULKAN_ENABLED
 			available_drivers.push_back("vulkan");
-		}
 #endif
+#ifdef D3D12_ENABLED
+			available_drivers.push_back("d3d12");
+#endif
+		}
 #ifdef GLES3_ENABLED
 		if (rendering_method == "gl_compatibility") {
 			available_drivers.push_back("opengl3");
@@ -2448,7 +2459,7 @@ Error Main::setup2() {
 		}
 
 		if (err != OK || display_server == nullptr) {
-			ERR_PRINT("Unable to create DisplayServer, all display drivers failed.");
+			ERR_PRINT("Unable to create DisplayServer, all display drivers failed.\nUse \"--headless\" command line argument to run the engine in headless mode if this is desired (e.g. for continuous integration).");
 			return err;
 		}
 
@@ -2487,7 +2498,7 @@ Error Main::setup2() {
 		OS::get_singleton()->benchmark_begin_measure("Servers", "Tablet Driver");
 
 		GLOBAL_DEF_RST_NOVAL("input_devices/pen_tablet/driver", "");
-		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "input_devices/pen_tablet/driver.windows", PROPERTY_HINT_ENUM, "wintab,winink"), "");
+		GLOBAL_DEF_RST_NOVAL(PropertyInfo(Variant::STRING, "input_devices/pen_tablet/driver.windows", PROPERTY_HINT_ENUM, "winink,wintab,dummy"), "");
 
 		if (tablet_driver.is_empty()) { // specified in project.godot
 			tablet_driver = GLOBAL_GET("input_devices/pen_tablet/driver");
